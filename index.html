@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Daily_전표입력 대사</title>
+<style>
+  :root{
+    --bg:#F3F4F1; --panel:#FFFFFF; --ink-900:#15191B; --ink-600:#545B57;
+    --line:#DCE0DA; --accent:#0E6E6E; --accent-ink:#FFFFFF;
+    --ok-bg:#E5F3EA; --ok-fg:#1F6B41; --warn-bg:#FBF0DC; --warn-fg:#8A5A0F; --crit-bg:#FBE7E3; --crit-fg:#9A3324;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#101413; --panel:#171C1B; --ink-900:#E9ECE8; --ink-600:#A7B0AB; --line:#2A312F; --accent:#33B3AB; --accent-ink:#08201E;
+      --ok-bg:#173325; --ok-fg:#78D89B; --warn-bg:#3A2C10; --warn-fg:#E4B863; --crit-bg:#3A1D17; --crit-fg:#F2988A; }
+  }
+  *{box-sizing:border-box;}
+  body{ margin:0; background:var(--bg); color:var(--ink-900); font-family:'Pretendard Variable',Pretendard,-apple-system,BlinkMacSystemFont,'Malgun Gothic',sans-serif; font-size:14px; line-height:1.55; padding:24px 16px 60px; }
+  .wrap{ max-width:760px; margin:0 auto; }
+  h1{ font-size:19px; margin:0 0 4px; }
+  .sub{ color:var(--ink-600); font-size:12.5px; margin-bottom:20px; }
+  .panel{ background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:20px; margin-bottom:16px; }
+  label{ display:block; font-size:12.5px; font-weight:600; margin-bottom:6px; color:var(--ink-600); }
+  input[type=file]{ width:100%; margin-bottom:16px; font-size:13px; }
+  input[type=text]{ width:100%; padding:9px 12px; border-radius:8px; border:1px solid var(--line); background:transparent; color:var(--ink-900); margin-bottom:16px; font-size:13px; }
+  button{ background:var(--accent); color:var(--accent-ink); border:none; padding:10px 18px; border-radius:8px; font-size:13.5px; font-weight:700; cursor:pointer; }
+  button:disabled{ opacity:.5; cursor:default; }
+  button.secondary{ background:transparent; color:var(--accent); border:1px solid var(--accent); }
+  .nav{ display:flex; gap:8px; margin-bottom:16px; }
+  .nav a{ font-size:12.5px; color:var(--ink-600); text-decoration:none; padding:6px 10px; border-radius:999px; }
+  .nav a.active{ background:var(--accent); color:var(--accent-ink); }
+  .status{ font-size:13px; padding:10px 12px; border-radius:8px; margin-top:12px; white-space:pre-wrap; }
+  .status.ok{ background:var(--ok-bg); color:var(--ok-fg); }
+  .status.warn{ background:var(--warn-bg); color:var(--warn-fg); }
+  .status.err{ background:var(--crit-bg); color:var(--crit-fg); }
+  table{ width:100%; border-collapse:collapse; font-size:12.5px; margin-top:8px;}
+  th,td{ border-bottom:1px solid var(--line); padding:6px 8px; text-align:left; }
+  a.sheet-link{ color:var(--accent); font-weight:600; }
+  .hidden{ display:none; }
+  .spinner{ display:inline-block; width:14px; height:14px; border:2px solid var(--line); border-top-color:var(--accent); border-radius:50%; animation:spin 0.8s linear infinite; vertical-align:middle; margin-right:6px; }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Daily_전표입력 대사 (카페24 ↔ 이카운트)</h1>
+  <div class="sub">업무용 PC/네트워크 상관없이, 구글 로그인만 되어 있으면 어디서든 사용 가능합니다.</div>
+
+  <div class="nav">
+    <a href="#upload" id="nav-upload" class="active">업로드</a>
+    <a href="#history" id="nav-history">처리 이력</a>
+  </div>
+
+  <div id="view-upload" class="panel">
+    <label>카페24 판매내역 CSV</label>
+    <input type="file" id="cafe24File" accept=".csv" />
+    <label>이카운트 판매현황 xlsx</label>
+    <input type="file" id="ecountFile" accept=".xlsx" />
+    <label>담당자 이름(선택)</label>
+    <input type="text" id="uploadedBy" placeholder="예: 홍길동" />
+    <button id="btnProcess">대사 시작</button>
+    <div id="status" class="status hidden"></div>
+    <div id="resultBox"></div>
+  </div>
+
+  <div id="view-history" class="panel hidden">
+    <button class="secondary" id="btnRefreshHistory">새로고침</button>
+    <div id="historyBox"></div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
+<script src="recon.js"></script>
+<script>
+// 배포된 Apps Script 웹앱 URL
+var APPS_SCRIPT_URL = "https://script.google.com/a/macros/printbakery.com/s/AKfycbyDaEUzKGlGlVZN-WfzDjq4qxCL4UByBs329U5Y4P6rQBHjgqqIZZqwuTlKKg4MERYg/exec";
+
+var REDUCED_FORMAT_NOTE = " - 이 날짜는 카페24 CSV가 축소 양식이라 결제업체/수량/상품옵션 컬럼이 없음: 결제유형상태는 확인불가로 표시, 품목대조는 줄 수 근사치(수량대조는 확인불가)";
+
+function toMonth(fullDate) { return fullDate.slice(0, 4) + "-" + fullDate.slice(4, 6); }
+function toDisplay(fullDate) { return fullDate.slice(0, 4) + "-" + fullDate.slice(4, 6) + "-" + fullDate.slice(6, 8); }
+
+function readFileAsText(file) {
+  return new Promise(function (resolve, reject) {
+    var reader = new FileReader();
+    reader.onload = function () { resolve(reader.result); };
+    reader.onerror = reject;
+    reader.readAsText(file, "utf-8");
+  });
+}
+function readFileAsArrayBuffer(file) {
+  return new Promise(function (resolve, reject) {
+    var reader = new FileReader();
+    reader.onload = function () { resolve(reader.result); };
+    reader.onerror = reject;
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+function setStatus(kind, text) {
+  var el = document.getElementById("status");
+  el.className = "status " + kind;
+  el.textContent = text;
+  el.classList.remove("hidden");
+}
+
+async function processUpload() {
+  var cafe24File = document.getElementById("cafe24File").files[0];
+  var ecountFile = document.getElementById("ecountFile").files[0];
+  var uploadedBy = document.getElementById("uploadedBy").value || "운영 담당자";
+  var btn = document.getElementById("btnProcess");
+
+  if (!cafe24File || !ecountFile) {
+    setStatus("err", "카페24 CSV와 이카운트 xlsx 파일을 모두 선택해주세요.");
+    return;
+  }
+
+  btn.disabled = true;
+  setStatus("warn", "⏳ 파일 분석 중...");
+  document.getElementById("resultBox").innerHTML = "";
+
+  try {
+    var cafe24Text = await readFileAsText(cafe24File);
+    var cafe24Parsed = parseCafe24Csv(cafe24Text);
+    var ecountBuf = await readFileAsArrayBuffer(ecountFile);
+    var ecountParsed = await parseEcountXlsx(ecountBuf);
+
+    var cafe24Rows = cafe24Parsed.rows;
+    var format = cafe24Parsed.format;
+    var ecountRows = ecountParsed.rows;
+
+    var cafe24Dates = {};
+    cafe24Rows.forEach(function (r) {
+      var on = (r["주문번호"] || "").trim();
+      if (/^\d{8}-/.test(on)) cafe24Dates[on.slice(0, 8)] = true;
+    });
+    var ecountDates = {};
+    ecountRows.forEach(function (r) {
+      var on = String(r["결제일"] || "").trim();
+      if (/^\d{8}/.test(on)) ecountDates[on.slice(0, 8)] = true;
+    });
+
+    var allCafe24Dates = Object.keys(cafe24Dates).sort();
+    var datesToProcess = allCafe24Dates.filter(function (d) { return ecountDates[d]; });
+    var skippedDates = allCafe24Dates.filter(function (d) { return !ecountDates[d]; });
+
+    if (datesToProcess.length === 0) {
+      setStatus("err", "카페24와 이카운트 파일에 겹치는 날짜가 없습니다. 두 파일이 같은 기간을 다루는지 확인해주세요.\n(카페24 날짜: " + (allCafe24Dates.join(", ") || "없음") + " / 이카운트 날짜: " + (Object.keys(ecountDates).sort().join(", ") || "없음") + ")");
+      btn.disabled = false;
+      return;
+    }
+
+    setStatus("warn", "⏳ 대사 계산 중... (" + datesToProcess.length + "개 날짜)");
+
+    var payload = { uploadedBy: uploadedBy, cafe24Filename: cafe24File.name, ecountFilename: ecountFile.name, dates: [], skippedDates: skippedDates };
+
+    datesToProcess.forEach(function (fullDate) {
+      var rows = reconcile(format, fullDate, cafe24Rows, ecountRows);
+      var seonsu = computeSeonsu(fullDate, ecountRows);
+      var dateDisplay = toDisplay(fullDate);
+      var extraNote = format === "reduced" ? REDUCED_FORMAT_NOTE : "";
+      var built = buildDateTab(dateDisplay, fullDate, rows, seonsu, extraNote);
+      payload.dates.push({
+        month: toMonth(fullDate),
+        dateDisplay: dateDisplay,
+        fullDate: fullDate,
+        values: built.values,
+        requests: built.requests,
+        warnings: built.warnings,
+        resultSummary: computeResultSummary(rows, format),
+      });
+    });
+
+    setStatus("warn", "⏳ 구글 시트에 반영 중...");
+
+    var res = await fetch(APPS_SCRIPT_URL, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(payload),
+    });
+    var json = await res.json();
+    if (json.error) {
+      setStatus("err", "서버 오류: " + json.error);
+      btn.disabled = false;
+      return;
+    }
+
+    renderResult(json, format);
+    setStatus("ok", "✅ 처리 완료: " + json.processedDates.join(", "));
+  } catch (e) {
+    console.error(e);
+    setStatus("err", (e && e.message) || JSON.stringify(e));
+  }
+  btn.disabled = false;
+}
+
+function renderResult(json, format) {
+  var box = document.getElementById("resultBox");
+  var html = "";
+  if (format === "reduced") {
+    html += '<div class="status warn">⚠️ 카페24 CSV가 축소 양식입니다. 결제유형/수량 확인이 제한되어 해당 항목은 "확인불가"로 표시됩니다.</div>';
+  }
+  if (json.skippedDates && json.skippedDates.length > 0) {
+    html += '<div class="status warn">카페24에는 ' + json.skippedDates.join(", ") + ' 날짜의 주문이 있지만 이카운트 데이터가 없어 건너뛰었습니다.</div>';
+  }
+  html += "<table><tr><th>날짜</th><th>전체</th><th>정상</th><th>미입력</th><th>금액불일치</th><th>품목/수량불일치</th></tr>";
+  Object.keys(json.resultSummary).forEach(function (d) {
+    var s = json.resultSummary[d];
+    html += "<tr><td>" + d + "</td><td>" + s.total + "</td><td>" + s.ok + "</td><td>" + s.missing + " (" + (s.missingAmt || 0).toLocaleString() + "원)</td><td>" + s.mismatch + "</td><td>" + s.itemQtyMismatch + "</td></tr>";
+  });
+  html += "</table>";
+  (json.spreadsheets || []).forEach(function (sp) {
+    html += '<p><a class="sheet-link" href="' + sp.url + '" target="_blank">📄 스프레드시트 열기</a></p>';
+  });
+  if (json.warnings && json.warnings.length > 0) {
+    html += '<div class="status warn">' + json.warnings.join("\n") + "</div>";
+  }
+  box.innerHTML = html;
+}
+
+async function loadHistory() {
+  var box = document.getElementById("historyBox");
+  box.innerHTML = '<span class="spinner"></span>불러오는 중...';
+  try {
+    var res = await fetch(APPS_SCRIPT_URL + "?action=history&limit=30", { credentials: "include" });
+    var json = await res.json();
+    var logs = json.logs || [];
+    if (logs.length === 0) {
+      box.innerHTML = "<p>이력이 없습니다.</p>";
+      return;
+    }
+    var html = "<table><tr><th>시각</th><th>담당자</th><th>처리 날짜</th><th>상태</th><th>탭</th></tr>";
+    logs.forEach(function (l) {
+      html += "<tr><td>" + (l.uploadedAt || "").slice(0, 16).replace("T", " ") + "</td><td>" + l.uploadedBy + "</td><td>" + l.detectedDates.join(", ") + "</td><td>" + l.status + "</td><td>" + l.targetTabs.join(", ") + "</td></tr>";
+    });
+    html += "</table>";
+    box.innerHTML = html;
+  } catch (e) {
+    box.innerHTML = '<div class="status err">이력을 불러오지 못했습니다: ' + ((e && e.message) || e) + "</div>";
+  }
+}
+
+document.getElementById("btnProcess").addEventListener("click", processUpload);
+document.getElementById("btnRefreshHistory").addEventListener("click", loadHistory);
+
+function switchView(hash) {
+  var isHistory = hash === "#history";
+  document.getElementById("view-upload").classList.toggle("hidden", isHistory);
+  document.getElementById("view-history").classList.toggle("hidden", !isHistory);
+  document.getElementById("nav-upload").classList.toggle("active", !isHistory);
+  document.getElementById("nav-history").classList.toggle("active", isHistory);
+  if (isHistory) loadHistory();
+}
+window.addEventListener("hashchange", function () { switchView(location.hash); });
+switchView(location.hash);
+</script>
+</body>
+</html>
