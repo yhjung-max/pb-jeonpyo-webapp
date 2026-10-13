@@ -105,6 +105,56 @@ function setStatus(kind, text) {
   el.classList.remove("hidden");
 }
 
+// Apps Script 웹앱이 도메인 제한(/a/macros/.../exec) 접근이라, 다른 origin에서 fetch()로
+// 부르면 로그인 리다이렉트를 CORS가 막아 "Failed to fetch"가 난다. 대신 숨겨진 iframe에
+// 폼을 submit(POST)하거나 iframe.src로 이동(GET)하는 방식을 쓴다 - 실제 브라우저 네비게이션이라
+// 리다이렉트를 그대로 따라갈 수 있다. 응답은 Apps Script가 window.parent로 postMessage해서 돌려준다.
+function callAppsScript(method, query, formPayload) {
+  return new Promise(function (resolve, reject) {
+    var frameName = "pbScriptFrame_" + Date.now() + "_" + Math.random().toString(36).slice(2);
+    var iframe = document.createElement("iframe");
+    iframe.name = frameName;
+    iframe.style.display = "none";
+    document.body.appendChild(iframe);
+    var form = null;
+
+    var timeoutId = setTimeout(function () {
+      cleanup();
+      reject(new Error("응답 시간 초과(120초) - 구글 로그인이 되어 있는지 확인해주세요."));
+    }, 120000);
+
+    function cleanup() {
+      clearTimeout(timeoutId);
+      window.removeEventListener("message", onMessage);
+      if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+      if (form && form.parentNode) form.parentNode.removeChild(form);
+    }
+    function onMessage(ev) {
+      if (!ev.data || ev.data.source !== "pb-jeonpyo-apps-script") return;
+      cleanup();
+      resolve(ev.data.result);
+    }
+    window.addEventListener("message", onMessage);
+
+    if (method === "GET") {
+      iframe.src = APPS_SCRIPT_URL + (query || "");
+    } else {
+      form = document.createElement("form");
+      form.method = "POST";
+      form.action = APPS_SCRIPT_URL + (query || "");
+      form.target = frameName;
+      form.style.display = "none";
+      var input = document.createElement("input");
+      input.type = "hidden";
+      input.name = "payload";
+      input.value = JSON.stringify(formPayload);
+      form.appendChild(input);
+      document.body.appendChild(form);
+      form.submit();
+    }
+  });
+}
+
 async function processUpload() {
   var cafe24File = document.getElementById("cafe24File").files[0];
   var ecountFile = document.getElementById("ecountFile").files[0];
@@ -174,13 +224,7 @@ async function processUpload() {
 
     setStatus("warn", "⏳ 구글 시트에 반영 중...");
 
-    var res = await fetch(APPS_SCRIPT_URL, {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify(payload),
-    });
-    var json = await res.json();
+    var json = await callAppsScript("POST", "", payload);
     if (json.error) {
       setStatus("err", "서버 오류: " + json.error);
       btn.disabled = false;
@@ -224,8 +268,7 @@ async function loadHistory() {
   var box = document.getElementById("historyBox");
   box.innerHTML = '<span class="spinner"></span>불러오는 중...';
   try {
-    var res = await fetch(APPS_SCRIPT_URL + "?action=history&limit=30", { credentials: "include" });
-    var json = await res.json();
+    var json = await callAppsScript("GET", "?action=history&limit=30");
     var logs = json.logs || [];
     if (logs.length === 0) {
       box.innerHTML = "<p>이력이 없습니다.</p>";
