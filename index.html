@@ -106,27 +106,33 @@ function setStatus(kind, text) {
 }
 
 // Apps Script 웹앱이 도메인 제한(/a/macros/.../exec) 접근이라, 다른 origin에서 fetch()로
-// 부르면 로그인 리다이렉트를 CORS가 막아 "Failed to fetch"가 난다. 대신 숨겨진 iframe에
-// 폼을 submit(POST)하거나 iframe.src로 이동(GET)하는 방식을 쓴다 - 실제 브라우저 네비게이션이라
-// 리다이렉트를 그대로 따라갈 수 있다. 응답은 Apps Script가 window.parent로 postMessage해서 돌려준다.
-function callAppsScript(method, query, formPayload) {
+// 부르면 로그인 리다이렉트를 CORS가 막아 "Failed to fetch"가 난다. iframe으로 시도해도
+// 구글 로그인 화면이 X-Frame-Options로 프레임 내 렌더링을 막는다. 그래서 "팝업 창"을 띄워
+// 그 안에서 실제(top-level) 네비게이션으로 처리한다 - 이 제약들을 받지 않는다.
+// 팝업 차단을 피하려면 클릭 핸들러 맨 앞(비동기 작업 전)에서 openAppsScriptPopup()으로
+// 미리 빈 팝업을 열어두고, 준비되면 callAppsScript(..., popup)에 그 팝업을 넘겨 재사용한다.
+function openAppsScriptPopup() {
+  return window.open("", "pbScriptPopup", "width=480,height=640");
+}
+
+function callAppsScript(method, query, formPayload, popup) {
   return new Promise(function (resolve, reject) {
-    var frameName = "pbScriptFrame_" + Date.now() + "_" + Math.random().toString(36).slice(2);
-    var iframe = document.createElement("iframe");
-    iframe.name = frameName;
-    iframe.style.display = "none";
-    document.body.appendChild(iframe);
+    if (!popup) popup = openAppsScriptPopup();
+    if (!popup) {
+      reject(new Error("팝업이 차단되었습니다. 브라우저에서 이 사이트의 팝업을 허용한 뒤 다시 시도해주세요."));
+      return;
+    }
     var form = null;
 
     var timeoutId = setTimeout(function () {
       cleanup();
-      reject(new Error("응답 시간 초과(120초) - 구글 로그인이 되어 있는지 확인해주세요."));
+      reject(new Error("응답 시간 초과(120초) - 팝업 창에서 구글 로그인이 필요한지 확인해주세요."));
     }, 120000);
 
     function cleanup() {
       clearTimeout(timeoutId);
       window.removeEventListener("message", onMessage);
-      if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+      try { popup.close(); } catch (e) {}
       if (form && form.parentNode) form.parentNode.removeChild(form);
     }
     function onMessage(ev) {
@@ -137,12 +143,12 @@ function callAppsScript(method, query, formPayload) {
     window.addEventListener("message", onMessage);
 
     if (method === "GET") {
-      iframe.src = APPS_SCRIPT_URL + (query || "");
+      popup.location = APPS_SCRIPT_URL + (query || "");
     } else {
       form = document.createElement("form");
       form.method = "POST";
       form.action = APPS_SCRIPT_URL + (query || "");
-      form.target = frameName;
+      form.target = "pbScriptPopup";
       form.style.display = "none";
       var input = document.createElement("input");
       input.type = "hidden";
@@ -156,12 +162,17 @@ function callAppsScript(method, query, formPayload) {
 }
 
 async function processUpload() {
+  // 비동기 작업(파일 읽기 등) 전에, 클릭 핸들러 안에서 바로 팝업을 미리 열어둔다.
+  // 그래야 나중에 실제 이동시킬 때 팝업 차단기에 걸리지 않는다.
+  var popup = openAppsScriptPopup();
+
   var cafe24File = document.getElementById("cafe24File").files[0];
   var ecountFile = document.getElementById("ecountFile").files[0];
   var uploadedBy = document.getElementById("uploadedBy").value || "운영 담당자";
   var btn = document.getElementById("btnProcess");
 
   if (!cafe24File || !ecountFile) {
+    if (popup) popup.close();
     setStatus("err", "카페24 CSV와 이카운트 xlsx 파일을 모두 선택해주세요.");
     return;
   }
@@ -196,6 +207,7 @@ async function processUpload() {
     var skippedDates = allCafe24Dates.filter(function (d) { return !ecountDates[d]; });
 
     if (datesToProcess.length === 0) {
+      if (popup) popup.close();
       setStatus("err", "카페24와 이카운트 파일에 겹치는 날짜가 없습니다. 두 파일이 같은 기간을 다루는지 확인해주세요.\n(카페24 날짜: " + (allCafe24Dates.join(", ") || "없음") + " / 이카운트 날짜: " + (Object.keys(ecountDates).sort().join(", ") || "없음") + ")");
       btn.disabled = false;
       return;
@@ -222,9 +234,9 @@ async function processUpload() {
       });
     });
 
-    setStatus("warn", "⏳ 구글 시트에 반영 중...");
+    setStatus("warn", "⏳ 구글 시트에 반영 중... (팝업 창이 뜨면 구글 로그인을 확인해주세요)");
 
-    var json = await callAppsScript("POST", "", payload);
+    var json = await callAppsScript("POST", "", payload, popup);
     if (json.error) {
       setStatus("err", "서버 오류: " + json.error);
       btn.disabled = false;
@@ -235,6 +247,7 @@ async function processUpload() {
     setStatus("ok", "✅ 처리 완료: " + json.processedDates.join(", "));
   } catch (e) {
     console.error(e);
+    if (popup) try { popup.close(); } catch (e2) {}
     setStatus("err", (e && e.message) || JSON.stringify(e));
   }
   btn.disabled = false;
@@ -265,10 +278,11 @@ function renderResult(json, format) {
 }
 
 async function loadHistory() {
+  var popup = openAppsScriptPopup();
   var box = document.getElementById("historyBox");
-  box.innerHTML = '<span class="spinner"></span>불러오는 중...';
+  box.innerHTML = '<span class="spinner"></span>불러오는 중... (팝업 창이 뜨면 구글 로그인을 확인해주세요)';
   try {
-    var json = await callAppsScript("GET", "?action=history&limit=30");
+    var json = await callAppsScript("GET", "?action=history&limit=30", null, popup);
     var logs = json.logs || [];
     if (logs.length === 0) {
       box.innerHTML = "<p>이력이 없습니다.</p>";
