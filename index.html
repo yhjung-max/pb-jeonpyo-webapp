@@ -109,11 +109,17 @@ function setStatus(kind, text) {
 // 부르면 로그인 리다이렉트를 CORS가 막아 "Failed to fetch"가 난다. iframe으로 시도해도
 // 구글 로그인 화면이 X-Frame-Options로 프레임 내 렌더링을 막는다. 그래서 "팝업 창"을 띄워
 // 그 안에서 실제(top-level) 네비게이션으로 처리한다 - 이 제약들을 받지 않는다.
+// 팝업이 끝나면 postMessage로 알려주는 대신(구글 로그인 과정의 COOP가 opener 연결을
+// 끊어버려 못 받는 경우가 있었음) 결과를 URL 해시에 담아 이 사이트의 callback.html로
+// 이동시킨다. 여기서는 popup.location.href를 주기적으로 읽어보다가(cross-origin인 동안은
+// 읽기가 실패함 - 이게 정상) 우리 origin으로 넘어온 순간을 감지해서 결과를 꺼낸다.
 // 팝업 차단을 피하려면 클릭 핸들러 맨 앞(비동기 작업 전)에서 openAppsScriptPopup()으로
 // 미리 빈 팝업을 열어두고, 준비되면 callAppsScript(..., popup)에 그 팝업을 넘겨 재사용한다.
 function openAppsScriptPopup() {
   return window.open("", "pbScriptPopup", "width=480,height=640");
 }
+
+var CALLBACK_URL_PREFIX = "https://yhjung-max.github.io/pb-jeonpyo-webapp/callback.html";
 
 function callAppsScript(method, query, formPayload, popup) {
   return new Promise(function (resolve, reject) {
@@ -129,18 +135,39 @@ function callAppsScript(method, query, formPayload, popup) {
       reject(new Error("응답 시간 초과(120초) - 팝업 창에서 구글 로그인이 필요한지 확인해주세요."));
     }, 120000);
 
+    var pollId = setInterval(function () {
+      if (popup.closed) {
+        cleanup();
+        reject(new Error("팝업 창이 결과 전달 전에 닫혔습니다. 다시 시도해주세요."));
+        return;
+      }
+      var href;
+      try {
+        href = popup.location.href;
+      } catch (e) {
+        return; // 아직 cross-origin(구글 로그인/실행 중) - 정상, 계속 기다림
+      }
+      if (href.indexOf(CALLBACK_URL_PREFIX) !== 0) return;
+      var hashIdx = href.indexOf("#result=");
+      cleanup();
+      try { popup.close(); } catch (e) {}
+      if (hashIdx === -1) {
+        reject(new Error("콜백 응답 형식이 올바르지 않습니다."));
+        return;
+      }
+      try {
+        var json = JSON.parse(decodeURIComponent(href.slice(hashIdx + "#result=".length)));
+        resolve(json);
+      } catch (e) {
+        reject(new Error("응답 파싱 실패: " + e.message));
+      }
+    }, 400);
+
     function cleanup() {
       clearTimeout(timeoutId);
-      window.removeEventListener("message", onMessage);
-      try { popup.close(); } catch (e) {}
+      clearInterval(pollId);
       if (form && form.parentNode) form.parentNode.removeChild(form);
     }
-    function onMessage(ev) {
-      if (!ev.data || ev.data.source !== "pb-jeonpyo-apps-script") return;
-      cleanup();
-      resolve(ev.data.result);
-    }
-    window.addEventListener("message", onMessage);
 
     if (method === "GET") {
       popup.location = APPS_SCRIPT_URL + (query || "");
