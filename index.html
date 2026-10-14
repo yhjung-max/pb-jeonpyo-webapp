@@ -132,7 +132,7 @@ function callAppsScript(method, query, formPayload, popup) {
 
     var timeoutId = setTimeout(function () {
       cleanup();
-      reject(new Error("응답 시간 초과(120초) - 팝업 창에서 구글 로그인이 필요한지 확인해주세요."));
+      reject(new Error("응답 시간 초과(120초) - 팝업 창에 \"결과 확인하기\" 버튼이 떠 있다면 눌러주세요."));
     }, 120000);
 
     var pollId = setInterval(function () {
@@ -261,7 +261,7 @@ async function processUpload() {
       });
     });
 
-    setStatus("warn", "⏳ 구글 시트에 반영 중... (팝업 창이 뜨면 구글 로그인을 확인해주세요)");
+    setStatus("warn", "⏳ 구글 시트에 반영 중... (팝업 창에서 로그인 후 \"결과 확인하기\" 버튼이 뜨면 눌러주세요)");
 
     var json = await callAppsScript("POST", "", payload, popup);
     if (json.error) {
@@ -307,7 +307,7 @@ function renderResult(json, format) {
 async function loadHistory() {
   var popup = openAppsScriptPopup();
   var box = document.getElementById("historyBox");
-  box.innerHTML = '<span class="spinner"></span>불러오는 중... (팝업 창이 뜨면 구글 로그인을 확인해주세요)';
+  box.innerHTML = '<span class="spinner"></span>불러오는 중... (팝업 창에서 로그인 후 "결과 확인하기" 버튼이 뜨면 눌러주세요)';
   try {
     var json = await callAppsScript("GET", "?action=history&limit=30", null, popup);
     var logs = json.logs || [];
